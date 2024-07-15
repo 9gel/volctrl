@@ -5,11 +5,17 @@ description = ""
 authors = ["Your Name <you@example.com>"]
 license = "GPL"
 readme = "README.md"
+packages = [
+  { include = "volctrl.py" },
+]
+
+[tool.poetry.scripts]
+volctrl = 'volctrl:run'
 
 [tool.poetry.dependencies]
 python = "^3.11"
 pyalsaaudio = "^0.11.0"
-pynput = "^1.7.7"
+keyboard = "^0.13.5"
 
 
 [build-system]
