@@ -2,18 +2,23 @@
 
 from __future__ import print_function
 
+# Force pynput to use uinput for keyboard
+import os
+os.environ["PYNPUT_BACKEND"] = "dummy"
+os.environ["PYNPUT_BACKEND_KEYBOARD"] = "uinput"
+
 import alsaaudio
 import asyncio
 import concurrent
 import contextvars
 import functools
 import getopt
-import keyboard
+from pynput import keyboard
 import logging
-import os
 import select
 import signal
 import sys
+import threading
 import traceback
 
 def list_cards():
@@ -85,6 +90,8 @@ def show_mixer(mixer):
         # May not support recording
         pass
 
+class ExitException(Exception): pass
+
 def control_mixer(mixer):
     print("Press esc key to quit")
 
@@ -99,27 +106,32 @@ def control_mixer(mixer):
     except:
         pass
 
+    def release(key):
+        if key == keyboard.Key.esc:
+            threading.current_thread().stop()
+            return
+
+        if key == 'm':
+            try:  # control might not support mute
+                mixer.setmute(not muted)
+                muted = not muted
+            except:
+                pass
+            return
+
+        if key == keyboard.Key.left:
+            volume = max(int(volume - 0.05*pmax), 0)
+        elif key == keyboard.Key.right:
+            volume = min(int(volume + 0.05*pmax), pmax)
+        else:
+            return
+        mixer.setvolume(volume, pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
+
     os.system("stty -echo")
-    while True:
-        e = keyboard.read_event()
-        if e.event_type == keyboard.KEY_UP:
-            if e.name == 'left':
-                volume = max(int(volume - 0.05*pmax), 0)
-            elif e.name == 'right':
-                volume = min(int(volume + 0.05*pmax), pmax)
-            elif e.name == 'm':
-                try:  # control might not support mute
-                    mixer.setmute(not muted)
-                    muted = not muted
-                except:
-                    pass
-                continue
-            elif e.name == 'esc':
-                os.system("stty echo")
-                return
-            else:
-                continue
-            mixer.setvolume(volume, pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
+    listener = keyboard.Listener(on_release=release)
+    listener.start()
+    listener.join()
+    os.system("stty echo")
 
 def output_volume(mixer):
     vmin, vmax = mixer.getrange(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
@@ -158,7 +170,7 @@ def listen_mixer(mixer):
         output_volume(mixer)
         mixer.handleevents()
         
-async def ctrl_mixer(mixer):
+async def ctrl_listen(mixer):
     loop = asyncio.events.get_running_loop()
 
     def futfunc(func):
@@ -172,6 +184,7 @@ async def ctrl_mixer(mixer):
             fut.result()
         except Exception:
             print("Got exception for %s:\n%s" % (func.__name__, traceback.format_exc()))
+            sys.stdout.flush()
         finally:
             os.system("stty echo")
 
@@ -179,6 +192,8 @@ async def ctrl_mixer(mixer):
         lisn = tg.create_task(f(listen_mixer))
         ctrl = tg.create_task(f(control_mixer))
         await ctrl
+        print("Control Done")
+        sys.stdout.flush()
         # when control exists, cancel the listener
         lisn.cancel()
 
@@ -190,6 +205,14 @@ def run():
 
     # Debug logging
     #logging.basicConfig(level=logging.DEBUG)
+
+    # Handle exceptions in threads properly
+    def exp_handler(args, /):
+        if args.exc_type == ValueError and args.exc_value.args[0].startswith('file descriptor cannot be a negative integer'):
+            return
+        print("\nException: {}".format(args))
+        print("Current thread %s" % threading.current_thread().name)
+    threading.excepthook = exp_handler
 
     kwargs = {}
     opts, args = getopt.getopt(sys.argv[1:], 'c:d:?h')
@@ -214,7 +237,7 @@ def run():
         sys.exit(1)
 
     show_mixer(mixer)
-    asyncio.run(ctrl_mixer(mixer), debug=True)
+    asyncio.run(ctrl_listen(mixer), debug=True)
 
 def usage():
     print('usage: mixertest.py [-c <card>] [control]',
