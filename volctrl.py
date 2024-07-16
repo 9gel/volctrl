@@ -4,12 +4,17 @@ from __future__ import print_function
 
 import alsaaudio
 import asyncio
+import concurrent
+import contextvars
+import functools
 import getopt
 import keyboard
+import logging
 import os
 import select
 import signal
 import sys
+import traceback
 
 def list_cards():
     print("Available sound cards:")
@@ -22,14 +27,7 @@ def list_mixers(kwargs):
     for m in alsaaudio.mixers(**kwargs):
         print("  '%s'" % m)
 
-def show_mixer(name, kwargs):
-    # Demonstrates how mixer settings are queried.
-    try:
-        mixer = alsaaudio.Mixer(name, **kwargs)
-    except alsaaudio.ALSAAudioError:
-        print("No such mixer", file=sys.stderr)
-        sys.exit(1)
-
+def show_mixer(mixer):
     print("Mixer name: '%s'" % mixer.mixer())
     volcap = mixer.volumecap()
     print("Capabilities: %s %s" % (' '.join(volcap),
@@ -103,13 +101,7 @@ def control_mixer(mixer):
 
     os.system("stty -echo")
     while True:
-        try:
-            e = keyboard.read_event()
-        except Exception as exp:
-            print("Error reading keyboard: %s" % exp)
-            sys.stdout.flush()
-            os.system("stty echo")
-            return
+        e = keyboard.read_event()
         if e.event_type == keyboard.KEY_UP:
             if e.name == 'left':
                 volume = max(int(volume - 0.05*pmax), 0)
@@ -123,6 +115,7 @@ def control_mixer(mixer):
                     pass
                 continue
             elif e.name == 'esc':
+                os.system("stty echo")
                 return
             else:
                 continue
@@ -159,32 +152,45 @@ def listen_mixer(mixer):
             continue
         pfd, pevt = out[0]
         if pfd != fd or pevt&select.POLLHUP or pevt&select.POLLRDHUP:
+            print("")
+            sys.stdout.flush()
             return
         output_volume(mixer)
         mixer.handleevents()
         
-def usage():
-    print('usage: mixertest.py [-c <card>] [control]',
-          file=sys.stderr)
-    sys.exit(2)
+async def ctrl_mixer(mixer):
+    loop = asyncio.events.get_running_loop()
 
-async def mixer(name, kwargs):
-    try:
-        mixer = alsaaudio.Mixer(name, **kwargs)
-    except alsaaudio.ALSAAudioError:
-        print("No such mixer", file=sys.stderr)
-        sys.exit(1)
+    def futfunc(func):
+        ctx_func = functools.partial(contextvars.copy_context().run, func)
+        return loop.run_in_executor(None, ctx_func, mixer)
+
+    async def f(func):
+        try:
+            fut = futfunc(func)
+            await fut
+            fut.result()
+        except Exception:
+            print("Got exception for %s:\n%s" % (func.__name__, traceback.format_exc()))
+        finally:
+            os.system("stty echo")
 
     async with asyncio.TaskGroup() as tg:
-        lisn = tg.create_task(asyncio.to_thread(listen_mixer, mixer))
-        ctrl = tg.create_task(asyncio.to_thread(control_mixer, mixer))
-        await ctrl  # when control exists, cancel the listener
+        lisn = tg.create_task(f(listen_mixer))
+        ctrl = tg.create_task(f(control_mixer))
+        await ctrl
+        # when control exists, cancel the listener
         lisn.cancel()
 
     mixer.close()
 
 def run():
+    # Do not handle CTRL-C
     signal.signal(signal.SIGINT, lambda *args: None)
+
+    # Debug logging
+    #logging.basicConfig(level=logging.DEBUG)
+
     kwargs = {}
     opts, args = getopt.getopt(sys.argv[1:], 'c:d:?h')
     for o, a in opts:
@@ -198,9 +204,22 @@ def run():
     list_cards()
     list_mixers(kwargs)
 
-    if len(args) == 1:
-        show_mixer(args[0], kwargs)
-        asyncio.run(mixer(args[0], kwargs))
+    if len(args) < 1:
+        return
+
+    try:
+        mixer = alsaaudio.Mixer(args[0], **kwargs)
+    except alsaaudio.ALSAAudioError:
+        print("No such mixer: '%s'" % name, file=sys.stderr)
+        sys.exit(1)
+
+    show_mixer(mixer)
+    asyncio.run(ctrl_mixer(mixer), debug=True)
+
+def usage():
+    print('usage: mixertest.py [-c <card>] [control]',
+          file=sys.stderr)
+    sys.exit(2)
 
 if __name__ == '__main__':
     run()
