@@ -90,49 +90,6 @@ def show_mixer(mixer):
         # May not support recording
         pass
 
-class ExitException(Exception): pass
-
-def control_mixer(mixer):
-    print("Press esc key to quit")
-
-    channel = alsaaudio.MIXER_CHANNEL_ALL
-    pmin, pmax = mixer.getrange(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
-    volumes = mixer.getvolume(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
-    volume = volumes[0]
-    muted = False
-    try:  # control might not support mute
-        mutes = mixer.getmute()
-        muted = mutes[0]
-    except:
-        pass
-
-    def release(key):
-        if key == keyboard.Key.esc:
-            threading.current_thread().stop()
-            return
-
-        if key == 'm':
-            try:  # control might not support mute
-                mixer.setmute(not muted)
-                muted = not muted
-            except:
-                pass
-            return
-
-        if key == keyboard.Key.left:
-            volume = max(int(volume - 0.05*pmax), 0)
-        elif key == keyboard.Key.right:
-            volume = min(int(volume + 0.05*pmax), pmax)
-        else:
-            return
-        mixer.setvolume(volume, pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
-
-    os.system("stty -echo")
-    listener = keyboard.Listener(on_release=release)
-    listener.start()
-    listener.join()
-    os.system("stty echo")
-
 def output_volume(mixer):
     vmin, vmax = mixer.getrange(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
     volumes = mixer.getvolume(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
@@ -148,6 +105,43 @@ def output_volume(mixer):
         m = 'unmuted'
     sys.stdout.write("\r%-7s | %3d:%3d:%3d" % (m, vmin, volume, vmax))
     sys.stdout.flush()
+
+def control_mixer(mixer):
+    print("Press esc key to quit")
+
+    channel = alsaaudio.MIXER_CHANNEL_ALL
+    pmin, pmax = mixer.getrange(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
+    volumes = mixer.getvolume(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
+    volume = volumes[0]
+    muted = False
+    try:  # control might not support mute
+        mutes = mixer.getmute()
+        muted = mutes[0]
+    except:
+        pass
+
+    os.system("stty -echo")
+    with keyboard.Events() as events:
+        for e in events:
+            if not isinstance(e, keyboard.Events.Release):
+                continue
+            if e.key == keyboard.Key.esc:
+                break
+            if e.key == keyboard.KeyCode.from_char('m'):
+                try:  # control might not support mute
+                    mixer.setmute(not muted)
+                    muted = not muted
+                except:
+                    pass
+                continue
+            if e.key == keyboard.Key.left:
+                volume = max(int(volume - 0.05*pmax), 0)
+            elif e.key == keyboard.Key.right:
+                volume = min(int(volume + 0.05*pmax), pmax)
+            else:
+                continue
+            mixer.setvolume(volume, pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
+    os.system("stty echo")
 
 def listen_mixer(mixer):
     pd = mixer.polldescriptors()
@@ -192,7 +186,6 @@ async def ctrl_listen(mixer):
         lisn = tg.create_task(f(listen_mixer))
         ctrl = tg.create_task(f(control_mixer))
         await ctrl
-        print("Control Done")
         sys.stdout.flush()
         # when control exists, cancel the listener
         lisn.cancel()

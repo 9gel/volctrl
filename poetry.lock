@@ -26,9 +26,8 @@ version = "1.7.7"
 description = "Monitor and control user input devices"
 optional = false
 python-versions = "*"
-files = [
-    {file = "pynput-1.7.7-py2.py3-none-any.whl", hash = "sha256:afc43f651684c98818de048abc76adf9f2d3d797083cb07c1f82be764a2d44cb"},
-]
+files = []
+develop = false
 
 [package.dependencies]
 evdev = {version = ">=1.3", markers = "sys_platform in \"linux\""}
@@ -36,6 +35,12 @@ pyobjc-framework-ApplicationServices = {version = ">=8.0", markers = "sys_platfo
 pyobjc-framework-Quartz = {version = ">=8.0", markers = "sys_platform == \"darwin\""}
 python-xlib = {version = ">=0.17", markers = "sys_platform in \"linux\""}
 six = "*"
+
+[package.source]
+type = "git"
+url = "https://github.com/9gel/pynput.git"
+reference = "827ec96"
+resolved_reference = "827ec966b3d6f18c80ced4c0f187add94873995c"
 
 [[package]]
 name = "pyobjc-core"
@@ -168,4 +173,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "df24d84b3cb31d13c0701468145ec0c54cc9c1817a3f8624c1326180e687035c"
+content-hash = "9f10a1243c4967581a1a7d192129c317a4cb770d4a29d72878da8264cf2cf170"
