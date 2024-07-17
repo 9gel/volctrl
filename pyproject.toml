@@ -15,7 +15,7 @@ volctrl = 'volctrl:run'
 [tool.poetry.dependencies]
 python = "^3.11"
 pyalsaaudio = "^0.11.0"
-pynput = { git = "https://github.com/9gel/pynput.git", rev = "da5cb16" }
+evdev = "^1.7.1"
 
 
 [build-system]

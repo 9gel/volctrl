@@ -11,15 +11,23 @@ import alsaaudio
 import asyncio
 import concurrent
 import contextvars
+import evdev
 import functools
 import getopt
-from pynput import keyboard
 import logging
+import pprint
 import select
 import signal
 import sys
 import threading
 import traceback
+
+KEY_MTE = evdev.ecodes.KEY_M # 50   # KEY_M
+#KEY_MTE = 113   # KEY_MUTE
+KEY_VUP = 106  # KEY_RIGHT
+#KEY_VUP = 114  # KEY_VOLUMEUP
+KEY_VDN = 105  # KEY_LEFT
+#KEY_VDN = 115  # KEY_VOLUMEDOWN
 
 def list_cards():
     print("Available sound cards:")
@@ -31,6 +39,13 @@ def list_mixers(kwargs):
     print("Available mixer controls:")
     for m in alsaaudio.mixers(**kwargs):
         print("  '%s'" % m)
+
+def get_mixer(name, kwargs):
+    try:
+        return alsaaudio.Mixer(name, **kwargs)
+    except alsaaudio.ALSAAudioError:
+        print("No such mixer: '%s'" % name, file=sys.stderr)
+        sys.exit(1)
 
 def show_mixer(mixer):
     print("Mixer name: '%s'" % mixer.mixer())
@@ -90,7 +105,17 @@ def show_mixer(mixer):
         # May not support recording
         pass
 
-def output_volume(mixer):
+def find_inputs():
+    devs = [evdev.InputDevice(path) for path in evdev.list_devices()]
+    evkey = evdev.ecodes.EV_KEY
+    return list(map(lambda dc: dc[0], 
+                    filter(lambda dc: \
+                            KEY_VUP in dc[1][evkey] \
+                            and KEY_VDN in dc[1][evkey] \
+                            and KEY_MTE in dc[1][evkey], \
+                            map(lambda d: (d, d.capabilities()), devs))))
+
+def get_volume(mixer):
     vmin, vmax = mixer.getrange(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
     volumes = mixer.getvolume(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
     volume = volumes[0]
@@ -100,112 +125,116 @@ def output_volume(mixer):
         muted = mutes[0]
     except:
         pass
+    return (muted, volume, vmin, vmax)
+
+def output_volume(mixer):
+    muted, volume, vmin, vmax = get_volume(mixer)
     m = 'muted'
     if not muted:
         m = 'unmuted'
     sys.stdout.write("\r%-7s | %3d:%3d:%3d" % (m, vmin, volume, vmax))
     sys.stdout.flush()
 
-def control_mixer(mixer):
-    print("Press esc key to quit")
+def show_volume(mixername, kwargs, quitter):
+    loop = asyncio.events.get_running_loop()
 
-    channel = alsaaudio.MIXER_CHANNEL_ALL
-    pmin, pmax = mixer.getrange(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
-    volumes = mixer.getvolume(pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
-    volume = volumes[0]
-    muted = False
-    try:  # control might not support mute
-        mutes = mixer.getmute()
-        muted = mutes[0]
-    except:
-        pass
-
-    os.system("stty -echo")
-    with keyboard.Events() as events:
-        for e in events:
-            if not isinstance(e, keyboard.Events.Release):
+    def _listen_mixer(mixername, kwargs):
+        mixer = get_mixer(mixername, kwargs)
+        pd = mixer.polldescriptors()
+        fd, emask = pd[0]
+        p = select.poll()
+        p.register(fd, emask)
+        first = False
+        while True:
+            out = p.poll(500)
+            if not out:
+                if not first:
+                    output_volume(mixer)
+                    first = True
                 continue
-            if e.key == keyboard.Key.esc:
-                break
-            if e.key == keyboard.KeyCode.from_char('m'):
+            pfd, pevt = out[0]
+            if pfd != fd or pevt&select.POLLHUP or pevt&select.POLLRDHUP:
+                sys.stderr.write("Mixer listener got a HUP\n")
+                sys.stderr.flush()
+                loop.call_soon_threadsafe(quitter)
+                return
+            output_volume(mixer)
+            mixer.handleevents()
+    
+    def _exp_handler(args, /):
+        sys.stderr.write("\nException in thread: {}\n".format(args))
+        sys.stderr.write("Current thread %s\n" % threading.current_thread().name)
+        sys.stderr.flush()
+        loop.call_soon_threadsafe(quitter)
+    threading.excepthook = _exp_handler
+
+    listener = threading.Thread(target=_listen_mixer, \
+            args=(mixername, kwargs), daemon=True)
+    listener.start()
+        
+async def control_mixer(device, mixer, quitter):
+    #print("Device: {} {} {}".format(device.name, device.path, device.phys))
+    try:
+        async for event in device.async_read_loop():
+            muted, volume, vmin, vmax = get_volume(mixer)
+            if event.type != evdev.ecodes.EV_KEY \
+                    or event.value != evdev.events.KeyEvent.key_up:
+                continue
+            if event.code == evdev.ecodes.KEY_ESC:
+                quitter()
+                continue
+            if event.code == KEY_MTE:
                 try:  # control might not support mute
                     mixer.setmute(not muted)
                     muted = not muted
                 except:
                     pass
                 continue
-            if e.key == keyboard.Key.left:
-                volume = max(int(volume - 0.05*pmax), 0)
-            elif e.key == keyboard.Key.right:
-                volume = min(int(volume + 0.05*pmax), pmax)
+            if event.code == KEY_VUP:
+                volume = min(int(volume + 0.05*(vmax-vmin))+vmin, vmax)
+            elif event.code == KEY_VDN:
+                volume = max(int(volume - 0.05*(vmax-vmin))+vmin, 0)
             else:
                 continue
-            mixer.setvolume(volume, pcmtype=alsaaudio.PCM_PLAYBACK, units=alsaaudio.VOLUME_UNITS_RAW)
-    os.system("stty echo")
+            mixer.setvolume(volume, pcmtype=alsaaudio.PCM_PLAYBACK, \
+                    units=alsaaudio.VOLUME_UNITS_RAW)
+    except Exception as e:
+        sys.stderr.write("Error reading from device {} ({}, {}):\n{}\n".format(\
+                device.name, device.path, device.phys, e))
+        sys.stderr.flush()
 
-def listen_mixer(mixer):
-    pd = mixer.polldescriptors()
-    fd, emask = pd[0]
-    p = select.poll()
-    p.register(fd, emask)
-    first = False
-    while True:
-        out = p.poll(500)
-        if not out:
-            if not first:
-                output_volume(mixer)
-                first = True
-            continue
-        pfd, pevt = out[0]
-        if pfd != fd or pevt&select.POLLHUP or pevt&select.POLLRDHUP:
-            print("")
-            sys.stdout.flush()
-            return
-        output_volume(mixer)
-        mixer.handleevents()
-        
-async def ctrl_listen(mixer):
-    loop = asyncio.events.get_running_loop()
+async def ctrl_show(mixername, kwargs):
+    mixer = get_mixer(mixername, kwargs)
 
-    def futfunc(func):
-        ctx_func = functools.partial(contextvars.copy_context().run, func)
-        return loop.run_in_executor(None, ctx_func, mixer)
+    devs = find_inputs()
+    if not devs:
+        sys.stderr.write("Cannot find any viable inputs\n")
+        return
+    quitq = asyncio.Queue()
+    def quitter():
+        quitq.put_nowait(True)
 
-    async def f(func):
-        try:
-            fut = futfunc(func)
-            await fut
-            fut.result()
-        except Exception:
-            print("Got exception for %s:\n%s" % (func.__name__, traceback.format_exc()))
-            sys.stdout.flush()
-        finally:
-            os.system("stty echo")
+    os.system("stty -echo")
+    print("Press esc key to quit")
+    async def all_tasks():
+        async with asyncio.TaskGroup() as cmtg:
+            for dev in devs:
+                cmtg.create_task(control_mixer(dev, mixer, quitter))
 
+    async def wait_quit(cmtg_task):
+        await quitq.get()
+        cmtg_task.cancel()
+
+    show_volume(mixername, kwargs, quitter)
     async with asyncio.TaskGroup() as tg:
-        lisn = tg.create_task(f(listen_mixer))
-        ctrl = tg.create_task(f(control_mixer))
-        await ctrl
-        sys.stdout.flush()
-        # when control exists, cancel the listener
-        lisn.cancel()
+        tg.create_task(wait_quit(tg.create_task(all_tasks())))
+    os.system("stty echo")
 
     mixer.close()
 
 def run():
-    # Do not handle CTRL-C
-    signal.signal(signal.SIGINT, lambda *args: None)
-
     # Debug logging
     #logging.basicConfig(level=logging.DEBUG)
-
-    # Handle exceptions in threads properly
-    def exp_handler(args, /):
-        if args.exc_type == ValueError and args.exc_value.args[0].startswith('file descriptor cannot be a negative integer'):
-            return
-        print("\nException: {}".format(args))
-        print("Current thread %s" % threading.current_thread().name)
-    threading.excepthook = exp_handler
 
     kwargs = {}
     opts, args = getopt.getopt(sys.argv[1:], 'c:d:?h')
@@ -223,14 +252,8 @@ def run():
     if len(args) < 1:
         return
 
-    try:
-        mixer = alsaaudio.Mixer(args[0], **kwargs)
-    except alsaaudio.ALSAAudioError:
-        print("No such mixer: '%s'" % name, file=sys.stderr)
-        sys.exit(1)
-
-    show_mixer(mixer)
-    asyncio.run(ctrl_listen(mixer), debug=True)
+    show_mixer(get_mixer(args[0], kwargs))
+    asyncio.run(ctrl_show(args[0], kwargs))
 
 def usage():
     print('usage: mixertest.py [-c <card>] [control]',
