@@ -1,20 +1,18 @@
 { pkgs ? import <nixpkgs> { } }:
-
-let
-  include-path = "${pkgs.linuxHeaders}/include";
-in
-
 pkgs.mkShell {
 
   shellHook = ''
     runHook preShellHook
 
     # add headers for python package compile
-    export C_INCLUDE_PATH="${include-path}"
+    export C_INCLUDE_PATH="${pkgs.linuxHeaders}/include"
+
+    # for ALSA to find plugins
+    export ALSA_PLUGIN_DIR="${pkgs.alsa-plugins}/lib/alsa-lib/"
 
     # enable poetry and enter virtual environment
-    source $(poetry env info --path)/bin/activate
     poetry install --no-interaction --no-root
+    source $(poetry env info --path)/bin/activate
 
     runHook postShellHook
   '';
@@ -23,18 +21,10 @@ pkgs.mkShell {
     poetry
 
     alsa-lib
+    alsa-plugins
 
-    autoconf
-    automake
-    bison
-    flex
-    fontforge
     gnumake
     gcc
-    libiconv
-    libtool # freetype calls glibtoolize
     linuxHeaders
-    makeWrapper
-    pkg-config
   ];
 }
