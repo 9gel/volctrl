@@ -22,12 +22,12 @@ import sys
 import threading
 import traceback
 
-KEY_MTE = evdev.ecodes.KEY_M # 50   # KEY_M
-#KEY_MTE = 113   # KEY_MUTE
-KEY_VUP = 106  # KEY_RIGHT
-#KEY_VUP = 114  # KEY_VOLUMEUP
-KEY_VDN = 105  # KEY_LEFT
-#KEY_VDN = 115  # KEY_VOLUMEDOWN
+#KEY_MTE = evdev.ecodes.KEY_M           # 50   # KEY_M
+KEY_MTE = evdev.ecodes.KEY_MUTE         # 113   # KEY_MUTE
+#KEY_VUP = evdev.ecodes.KEY_RIGHT        # 106  # KEY_RIGHT
+KEY_VUP = evdev.ecodes.KEY_VOLUMEUP    # 114  # KEY_VOLUMEUP
+#KEY_VDN = evdev.ecodes.KEY_LEFT         # 105  # KEY_LEFT
+KEY_VDN = evdev.ecodes.KEY_VOLUMEDOWN  # 115  # KEY_VOLUMEDOWN
 
 def list_cards():
     print("Available sound cards:")
@@ -107,12 +107,12 @@ def show_mixer(mixer):
 
 def find_inputs():
     devs = [evdev.InputDevice(path) for path in evdev.list_devices()]
-    evkey = evdev.ecodes.EV_KEY
     return list(map(lambda dc: dc[0], 
                     filter(lambda dc: \
-                            KEY_VUP in dc[1][evkey] \
-                            and KEY_VDN in dc[1][evkey] \
-                            and KEY_MTE in dc[1][evkey], \
+                            evdev.ecodes.EV_KEY in dc[1] \
+                            and KEY_VUP in dc[1][evdev.ecodes.EV_KEY] \
+                            and KEY_VDN in dc[1][evdev.ecodes.EV_KEY] \
+                            and KEY_MTE in dc[1][evdev.ecodes.EV_KEY], \
                             map(lambda d: (d, d.capabilities()), devs))))
 
 def get_volume(mixer):
