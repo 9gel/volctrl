@@ -18,6 +18,7 @@ import logging
 import pprint
 import select
 import signal
+import neovolume
 import sys
 import threading
 import traceback
@@ -28,6 +29,7 @@ KEY_MTE = evdev.ecodes.KEY_MUTE         # 113   # KEY_MUTE
 KEY_VUP = evdev.ecodes.KEY_VOLUMEUP    # 114  # KEY_VOLUMEUP
 #KEY_VDN = evdev.ecodes.KEY_LEFT         # 105  # KEY_LEFT
 KEY_VDN = evdev.ecodes.KEY_VOLUMEDOWN  # 115  # KEY_VOLUMEDOWN
+VOL_STEP = 0.03
 
 def list_cards():
     print("Available sound cards:")
@@ -127,13 +129,21 @@ def get_volume(mixer):
         pass
     return (muted, volume, vmin, vmax)
 
+neo = None
+
 def output_volume(mixer):
+    global neo
     muted, volume, vmin, vmax = get_volume(mixer)
     m = 'muted'
     if not muted:
         m = 'unmuted'
-    sys.stdout.write("\r%-7s | %3d:%3d:%3d" % (m, vmin, volume, vmax))
+    sys.stdout.write("\r%-7s | %7d:%7d:%7d" % (m, vmin, volume, vmax))
     sys.stdout.flush()
+
+    if not neo:
+        neo = neovolume.NeoVolume(vol_min=vmin, vol_max=vmax, curr_vol=volume, muted=muted)
+    neo.set_mute(muted)
+    neo.set_volume(volume)
 
 def show_volume(mixername, kwargs, quitter):
     loop = asyncio.events.get_running_loop()
@@ -166,7 +176,7 @@ def show_volume(mixername, kwargs, quitter):
         sys.stderr.write("Current thread %s\n" % threading.current_thread().name)
         sys.stderr.flush()
         loop.call_soon_threadsafe(quitter)
-    threading.excepthook = _exp_handler
+    #threading.excepthook = _exp_handler
 
     listener = threading.Thread(target=_listen_mixer, \
             args=(mixername, kwargs), daemon=True)
@@ -191,9 +201,9 @@ async def control_mixer(device, mixer, quitter):
                     pass
                 continue
             if event.code == KEY_VUP:
-                volume = min(int(volume + 0.05*(vmax-vmin))+vmin, vmax)
+                volume = min(int(volume + VOL_STEP*(vmax-vmin))+vmin, vmax)
             elif event.code == KEY_VDN:
-                volume = max(int(volume - 0.05*(vmax-vmin))+vmin, 0)
+                volume = max(int(volume - VOL_STEP*(vmax-vmin))+vmin, 0)
             else:
                 continue
             mixer.setvolume(volume, pcmtype=alsaaudio.PCM_PLAYBACK, \
