@@ -19,6 +19,7 @@ import pprint
 import select
 import signal
 import neovolume
+from gpiozero import RotaryEncoder
 import sys
 import threading
 import traceback
@@ -34,6 +35,10 @@ KEY_VDN = evdev.ecodes.KEY_VOLUMEDOWN  # 115  # KEY_VOLUMEDOWN
 #KEY_QUIT = evdev.ecodes.KEY_ESC
 
 VOL_STEP = 0.03
+
+ROTARY_PIN_A = 22
+ROTARY_PIN_B = 27
+ROTATY_PIN_M = 17
 
 def list_cards():
     print("Available sound cards:")
@@ -175,18 +180,11 @@ def show_volume(mixername, kwargs, quitter):
             output_volume(mixer)
             mixer.handleevents()
     
-    def _exp_handler(args, /):
-        sys.stderr.write("\nException in thread: {}\n".format(args))
-        sys.stderr.write("Current thread %s\n" % threading.current_thread().name)
-        sys.stderr.flush()
-        loop.call_soon_threadsafe(quitter)
-    #threading.excepthook = _exp_handler
-
     listener = threading.Thread(target=_listen_mixer, \
             args=(mixername, kwargs), daemon=True)
     listener.start()
 
-async def change(ecode, mixer):
+def change(ecode, mixer):
     muted, volume, vmin, vmax = get_volume(mixer)
     if ecode == KEY_MTE:
         try:  # control might not support mute
@@ -213,13 +211,24 @@ async def input_control(device, mixer, quitter):
                     or event.value != evdev.events.KeyEvent.key_up:
                 continue
             if event.code == KEY_QUIT:
-                await quitter
+                quitter()
             elif event.code == KEY_MTE or event.code == KEY_VUP or event.code == KEY_VDN:
                 await change(event.code, mixer)
     except Exception as e:
         sys.stderr.write("Error reading from device {} ({}, {}):\n{}\n".format(\
                 device.name, device.path, device.phys, e))
         sys.stderr.flush()
+
+async def rotary_input(mixer, quitter):
+    loop = asyncio.events.get_running_loop()
+
+    rotor = RotaryEncoder(ROTARY_PIN_A, ROTARY_PIN_B)
+    rotor.when_rotated_clockwise = functools.partial(\
+            loop.call_soon_threadsafe, change, KEY_VUP, mixer)
+    rotor.when_rotated_counter_clockwise = functools.partial(\
+            loop.call_soon_threadsafe, change, KEY_VDN, mixer)
+
+    await asyncio.Event().wait()
 
 async def ctrl_show(mixername, kwargs):
     mixer = get_mixer(mixername, kwargs)
@@ -229,16 +238,16 @@ async def ctrl_show(mixername, kwargs):
         sys.stderr.write("Cannot find any viable volume inputs\n")
         return
     quitq = asyncio.Queue()
-    async def _q():
+    def quitter():
         quitq.put_nowait(True)
-    quitter = _q()
 
     os.system("stty -echo")
-    print("Press esc key to quit")
+    print("Press {} to quit".format(evdev.ecodes.KEY[KEY_QUIT]))
     async def all_tasks():
         async with asyncio.TaskGroup() as cmtg:
             for dev in inputs:
                 cmtg.create_task(input_control(dev, mixer, quitter))
+            cmtg.create_task(rotary_input(mixer, quitter))
 
     async def wait_quit(cmtg_task):
         await quitq.get()

@@ -20,6 +20,7 @@ gpiozero = "^2.0.1"
 adafruit-circuitpython-neopixel-spi = "^1.0.9"
 rpi-gpio = "^0.7.1"
 adafruit-circuitpython-led-animation = "^2.9.1"
+lgpio = "^0.2.2.0"
 
 
 [build-system]
