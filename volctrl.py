@@ -24,11 +24,15 @@ import threading
 import traceback
 
 #KEY_MTE = evdev.ecodes.KEY_M           # 50   # KEY_M
-KEY_MTE = evdev.ecodes.KEY_MUTE         # 113   # KEY_MUTE
-#KEY_VUP = evdev.ecodes.KEY_RIGHT        # 106  # KEY_RIGHT
+#KEY_VUP = evdev.ecodes.KEY_RIGHT       # 106  # KEY_RIGHT
+#KEY_VDN = evdev.ecodes.KEY_LEFT        # 105  # KEY_LEFT
+KEY_QUIT = evdev.ecodes.KEY_KP1         # 79
+
+KEY_MTE = evdev.ecodes.KEY_MUTE        # 113   # KEY_MUTE
 KEY_VUP = evdev.ecodes.KEY_VOLUMEUP    # 114  # KEY_VOLUMEUP
-#KEY_VDN = evdev.ecodes.KEY_LEFT         # 105  # KEY_LEFT
 KEY_VDN = evdev.ecodes.KEY_VOLUMEDOWN  # 115  # KEY_VOLUMEDOWN
+#KEY_QUIT = evdev.ecodes.KEY_ESC
+
 VOL_STEP = 0.03
 
 def list_cards():
@@ -181,33 +185,37 @@ def show_volume(mixername, kwargs, quitter):
     listener = threading.Thread(target=_listen_mixer, \
             args=(mixername, kwargs), daemon=True)
     listener.start()
-        
-async def control_mixer(device, mixer, quitter):
+
+async def change(ecode, mixer):
+    muted, volume, vmin, vmax = get_volume(mixer)
+    if ecode == KEY_MTE:
+        try:  # control might not support mute
+            mixer.setmute(not muted)
+            muted = not muted
+        except:
+            pass
+        return
+
+    if ecode == KEY_VUP:
+        volume = min(int(volume + VOL_STEP*(vmax-vmin))+vmin, vmax)
+    elif ecode == KEY_VDN:
+        volume = max(int(volume - VOL_STEP*(vmax-vmin))+vmin, 0)
+    else:
+        return
+    mixer.setvolume(volume, pcmtype=alsaaudio.PCM_PLAYBACK, \
+            units=alsaaudio.VOLUME_UNITS_RAW)
+
+async def input_control(device, mixer, quitter):
     #print("Device: {} {} {}".format(device.name, device.path, device.phys))
     try:
         async for event in device.async_read_loop():
-            muted, volume, vmin, vmax = get_volume(mixer)
             if event.type != evdev.ecodes.EV_KEY \
                     or event.value != evdev.events.KeyEvent.key_up:
                 continue
-            if event.code == evdev.ecodes.KEY_ESC:
-                quitter()
-                continue
-            if event.code == KEY_MTE:
-                try:  # control might not support mute
-                    mixer.setmute(not muted)
-                    muted = not muted
-                except:
-                    pass
-                continue
-            if event.code == KEY_VUP:
-                volume = min(int(volume + VOL_STEP*(vmax-vmin))+vmin, vmax)
-            elif event.code == KEY_VDN:
-                volume = max(int(volume - VOL_STEP*(vmax-vmin))+vmin, 0)
-            else:
-                continue
-            mixer.setvolume(volume, pcmtype=alsaaudio.PCM_PLAYBACK, \
-                    units=alsaaudio.VOLUME_UNITS_RAW)
+            if event.code == KEY_QUIT:
+                await quitter
+            elif event.code == KEY_MTE or event.code == KEY_VUP or event.code == KEY_VDN:
+                await change(event.code, mixer)
     except Exception as e:
         sys.stderr.write("Error reading from device {} ({}, {}):\n{}\n".format(\
                 device.name, device.path, device.phys, e))
@@ -216,28 +224,31 @@ async def control_mixer(device, mixer, quitter):
 async def ctrl_show(mixername, kwargs):
     mixer = get_mixer(mixername, kwargs)
 
-    devs = find_inputs()
-    if not devs:
-        sys.stderr.write("Cannot find any viable inputs\n")
+    inputs = find_inputs()
+    if not inputs:
+        sys.stderr.write("Cannot find any viable volume inputs\n")
         return
     quitq = asyncio.Queue()
-    def quitter():
+    async def _q():
         quitq.put_nowait(True)
+    quitter = _q()
 
     os.system("stty -echo")
     print("Press esc key to quit")
     async def all_tasks():
         async with asyncio.TaskGroup() as cmtg:
-            for dev in devs:
-                cmtg.create_task(control_mixer(dev, mixer, quitter))
+            for dev in inputs:
+                cmtg.create_task(input_control(dev, mixer, quitter))
 
     async def wait_quit(cmtg_task):
         await quitq.get()
         cmtg_task.cancel()
 
     show_volume(mixername, kwargs, quitter)
+
     async with asyncio.TaskGroup() as tg:
         tg.create_task(wait_quit(tg.create_task(all_tasks())))
+    print()
     os.system("stty echo")
 
     mixer.close()
